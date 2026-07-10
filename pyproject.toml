@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "narrs"
+version = "0.1.0"
+description = "Noise-Aware Robust Region Search: a black-box optimizer that finds stable parameter regions instead of overfit points."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Blake" }
+]
+keywords = ["optimization", "black-box", "robust", "hyperparameter", "backtesting", "noisy-optimization"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["scipy>=1.10"]              # enables the KD-tree neighbor backend
+dev = ["pytest>=7.0", "scipy>=1.10"]
+
+[tool.setuptools.packages.find]
+include = ["narrs*"]
