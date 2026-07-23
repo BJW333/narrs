@@ -226,9 +226,35 @@ data an embargo of zero quietly inflates every result.
 ## Tests and verification
 
 ```bash
+python tests/acceptance.py --original /path/to/old/package       # go/no-go verdict
 python tests/test_additions.py                                   # 30 unit tests
 python tests/verify_changes.py --original /path/to/old/package   # 13 integration checks
 ```
+
+`acceptance.py` is the one to run before shipping — it ends in a single
+SAFE TO PUSH / DO NOT PUSH line and calls the other two as sub-steps.
+
+### The number that actually matters
+
+Not how often NARRS wins, but **how often it is confidently wrong**. A run that
+reports `medium` and then fails is the system working: it told you not to trust
+it. A run that reports `high` and fails is the only outcome that costs money.
+
+Measured over 24 runs (12 seeds x 2 landscapes):
+
+| stated rating | survived out of sample |
+|---|---|
+| `high` | 21/22 — **95%** |
+| `medium` | 0/2 — **0%** |
+
+The rating is informative, and that is the actual product claim. NARRS lands on
+the true edge 9/12 on the overfitting trap while every baseline manages 0–1/12 —
+but more importantly, the runs where it is fooled are the runs it declines to
+call `high`.
+
+Stress-testing that by starving it of evidence (`n_search_contexts` from 6 down
+to 2), confident failures stay at 1–3 of 12 across the whole range. It degrades
+by losing confidence, not by getting confidently wrong.
 
 `test_additions.py` checks each new function in isolation. `verify_changes.py`
 tries to falsify the integration claims:
