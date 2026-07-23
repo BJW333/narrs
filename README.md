@@ -227,12 +227,20 @@ data an embargo of zero quietly inflates every result.
 
 ```bash
 python tests/acceptance.py --original /path/to/old/package       # go/no-go verdict
-python tests/test_additions.py                                   # 30 unit tests
-python tests/verify_changes.py --original /path/to/old/package   # 13 integration checks
+python tests/test_additions.py                                   # 35 unit tests
+python tests/verify_changes.py --original /path/to/old/package   # 14 integration checks
+python tests/stress_suite.py --quick                             # scaling sweep + gates
 ```
 
 `acceptance.py` is the one to run before shipping — it ends in a single
 SAFE TO PUSH / DO NOT PUSH line and calls the other two as sub-steps.
+
+`stress_suite.py` is the exploratory one: it answers *where does this start to
+fail*, sweeping dimensionality (2→8), context count (2→24), noise, compute
+budget and trap difficulty, with baselines at matched budget in every cell. It
+overlaps `acceptance.py` on calibration and dominance by design — acceptance
+gives a verdict on the shipping configuration, the stress suite maps the
+envelope around it.
 
 ### The number that actually matters
 

@@ -130,15 +130,34 @@ def check_equivalence(original_path: str | None) -> None:
                 return
             outs[label] = proc.stdout
 
-    same = outs["original"] == outs["modified"]
-    n_fields = len(json.loads(outs["original"]))
+    before = json.loads(outs["original"])
+    after = json.loads(outs["modified"])
+
+    # Split the comparison. Every decision and every number must be identical --
+    # that is the actual behaviour guarantee. Advisory warnings are additive
+    # information: new ones may appear, but an existing one disappearing would
+    # mean a real behaviour change, so that is checked too.
+    keys = sorted(k for k in before if k != "warnings")
+    mismatched = [k for k in keys if before[k] != after[k]]
     record(
-        "default run is byte-identical to the original",
-        same,
-        f"{n_fields} fields compared at 12dp"
-        if same
-        else "OUTPUT DIFFERS -- the changes altered existing behaviour",
+        "every decision and number is identical to the original",
+        not mismatched,
+        f"{len(keys)} fields compared at 12dp"
+        if not mismatched
+        else f"DIFFERS in: {', '.join(mismatched)} -- the changes altered behaviour",
     )
+    for key in mismatched:
+        print(f"       {key}:\n         original: {before[key]}\n         modified: {after[key]}")
+
+    old_warnings, new_warnings = before.get("warnings", []), after.get("warnings", [])
+    dropped = [w for w in old_warnings if w not in new_warnings]
+    added = [w for w in new_warnings if w not in old_warnings]
+    record("no original warning was removed", not dropped,
+           f"dropped: {dropped}" if dropped else f"{len(old_warnings)} original warning(s) intact")
+    if added:
+        print(f"       {len(added)} new advisory warning(s) added by the changes:")
+        for w in added:
+            print(f"         + {w}")
 
 
 # --------------------------------------------------------------------------- #

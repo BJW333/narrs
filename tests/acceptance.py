@@ -19,7 +19,8 @@ the time and cannot tell you when.
 
 Gates
 -----
-1. EQUIVALENCE   default path byte-identical to the original package
+1. EQUIVALENCE   every decision and number identical to the original package
+                 (advisory warnings may be added, never removed)
 2. CALIBRATION   'high' survives more often than not-'high', and confident
                  failures stay rare
 3. DOMINANCE     NARRS survives more often than every baseline, both landscapes
@@ -103,8 +104,11 @@ def gate_equivalence(original: str | None) -> None:
         [sys.executable, str(verify), "--original", original, "--quick"],
         capture_output=True, text=True, timeout=3600,
     )
-    ok = "[PASS] default run is byte-identical" in proc.stdout
-    gate("default run byte-identical to the original package", ok,
+    # Numbers and decisions must match exactly; advisory warnings are additive
+    # and are gated separately by verify_changes.py itself.
+    ok = ("[PASS] every decision and number is identical" in proc.stdout
+          and "[PASS] no original warning was removed" in proc.stdout)
+    gate("every decision and number identical to the original package", ok,
          "" if ok else "see: python tests/verify_changes.py --original ...")
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -72,14 +73,29 @@ class MetricRule:
         if self.good_value == self.bad_value:
             return 0.0
 
+        # NaN and infinity must be caught before the clamp. Python's min/max
+        # compare with NaN as False, so max(0.0, min(1.0, nan)) evaluates to 1.0
+        # -- a failed calculation would silently score as the best possible
+        # result and be ranked top. A metric that could not be computed is the
+        # worst case, not the best.
+        if value != value or math.isinf(value):
+            return 0.0
+
         if self.higher_is_better:
             score = (value - self.bad_value) / (self.good_value - self.bad_value)
         else:
             score = (self.bad_value - value) / (self.bad_value - self.good_value)
 
+        if score != score:
+            return 0.0
         return max(0.0, min(1.0, score))
 
     def violates_hard_rule(self, value: float) -> bool:
+        # A metric that is NaN or infinite is not evidence of anything. Treat it
+        # as a hard violation so the observation is discarded rather than folded
+        # into an average, where it would either poison or flatter the result.
+        if value != value or math.isinf(value):
+            return True
         if self.hard_min is not None and value < self.hard_min:
             return True
         if self.hard_max is not None and value > self.hard_max:

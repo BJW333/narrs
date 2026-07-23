@@ -994,6 +994,40 @@ class NoiseAwareRobustRegionSearch:
         if self.compute_budget_reached:
             warning_signs.append("Compute budget was reached.")
 
+        # Cross-context robustness is the whole premise. With a single search
+        # context there is nothing to compare across, so context_instability is
+        # trivially zero and context_worst_case is just that one context's mean --
+        # the robustness terms report perfect stability on no evidence. Say so.
+        if len(self.search_contexts) < 2:
+            warning_signs.append(
+                "Only one search context: cross-context robustness was not measured, "
+                "so stability scores are not evidence."
+            )
+        elif len(self.search_contexts) < 4:
+            warning_signs.append(
+                f"Only {len(self.search_contexts)} search contexts: context statistics "
+                "rest on very little evidence."
+            )
+
+        if len(self.holdout_contexts) < 2:
+            warning_signs.append(
+                "Fewer than two holdout contexts: out-of-sample validation cannot "
+                "distinguish a robust region from one lucky regime."
+            )
+
+        # If every point scored the same, the objective is not responding to the
+        # parameters at all. That is almost always a wiring bug -- the strategy
+        # ignoring an argument, a constant being returned on an error path -- and
+        # without this check NARRS reports a confident recommendation for what is
+        # really an arbitrary point in a flat field.
+        if len(self.all_point_results) > 2:
+            spread = safe_std([r.point_mean for r in self.all_point_results])
+            if spread < 1e-9:
+                warning_signs.append(
+                    "Every tested point scored identically: the objective appears "
+                    "insensitive to the parameters. Check that it actually uses them."
+                )
+
         if not robust_regions:
             warning_signs.append("No robust regions survived.")
 

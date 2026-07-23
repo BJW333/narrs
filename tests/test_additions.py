@@ -188,6 +188,106 @@ def test_pbo_low_when_signal_is_real():
     assert result["pbo"] < 0.05, result["pbo"]
 
 
+def test_nan_never_scores_as_perfect():
+    """Regression: MetricRule.normalize(nan) returned 1.0 -- the best possible score.
+
+    Python's min/max compare False against NaN, so max(0.0, min(1.0, nan)) is
+    1.0. A failed metric calculation was therefore ranked top and confidently
+    recommended. NaN and infinity must be the worst case, and must count as
+    hard-rule violations so the observation is discarded rather than averaged in.
+    """
+    rule = MetricRule(good_value=1.0, bad_value=0.0, higher_is_better=True)
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        assert rule.normalize(bad) == 0.0, bad
+        assert rule.violates_hard_rule(bad) is True, bad
+    # the ordinary path is untouched
+    assert rule.normalize(0.5) == 0.5
+    assert rule.normalize(2.0) == 1.0
+    assert rule.normalize(-1.0) == 0.0
+    assert rule.violates_hard_rule(0.5) is False
+
+    inverted = MetricRule(good_value=0.0, bad_value=1.0, higher_is_better=False)
+    assert inverted.normalize(float("nan")) == 0.0
+
+
+def test_nan_objective_does_not_produce_a_confident_answer():
+    """An objective that always fails must abstain, not recommend something."""
+    problem = PlateauSpikeProblem(n_search_contexts=4, n_holdout_contexts=4)
+
+    def nan_objective(params, context, rep):
+        return ObjectiveResult(performance_metrics={"score": float("nan")},
+                               sample_count=1)
+
+    opt = NoiseAwareRobustRegionSearch(
+        objective_function=nan_objective,
+        parameter_space=problem.parameter_space,
+        search_contexts=problem.search_contexts,
+        holdout_contexts=problem.holdout_contexts,
+        metric_rules=problem.metric_rules,
+        metric_weights=problem.metric_weights,
+        config=NARRSConfig(search_rounds=1, initial_candidate_count=12,
+                           repetitions_per_point=1, total_compute_budget=300),
+    )
+    result = opt.run()
+    assert result["recommended_center"] is None, "a NaN objective must not yield a pick"
+
+
+def test_thin_evidence_is_warned_about():
+    """A single search context measures no cross-context robustness -- say so."""
+    problem = PlateauSpikeProblem(n_search_contexts=4, n_holdout_contexts=4)
+    opt = NoiseAwareRobustRegionSearch(
+        objective_function=problem.objective,
+        parameter_space=problem.parameter_space,
+        search_contexts=[SearchContext("only")],
+        holdout_contexts=problem.holdout_contexts,
+        metric_rules=problem.metric_rules,
+        metric_weights=problem.metric_weights,
+        config=NARRSConfig(search_rounds=1, initial_candidate_count=12,
+                           repetitions_per_point=2, total_compute_budget=400),
+    )
+    warnings = opt.run()["confidence_report"].warning_signs
+    assert any("one search context" in w for w in warnings), warnings
+
+
+def test_parameter_insensitive_objective_is_flagged():
+    """If every point scores the same, the objective probably ignores the params."""
+    problem = PlateauSpikeProblem(n_search_contexts=4, n_holdout_contexts=4)
+    opt = NoiseAwareRobustRegionSearch(
+        objective_function=lambda p, c, r: ObjectiveResult(
+            performance_metrics={"score": 1.0}, sample_count=1),
+        parameter_space=problem.parameter_space,
+        search_contexts=problem.search_contexts,
+        holdout_contexts=problem.holdout_contexts,
+        metric_rules=problem.metric_rules,
+        metric_weights=problem.metric_weights,
+        config=NARRSConfig(search_rounds=1, initial_candidate_count=16,
+                           repetitions_per_point=1, total_compute_budget=500),
+    )
+    warnings = opt.run()["confidence_report"].warning_signs
+    assert any("insensitive to the parameters" in w for w in warnings), warnings
+
+
+def test_scalable_problems_hold_their_shape_across_dimensions():
+    from narrs.benchmarks.scalable import ScalableDecoy, ScalablePlateauSpike
+    for dim in (1, 2, 5, 8):
+        p = ScalablePlateauSpike(dim=dim)
+        names = [s.name for s in p.parameter_space]
+        assert len(names) == dim
+        plateau = {n: 0.30 for n in names}
+        spike = {n: 0.75 for n in names}
+        assert p.region_kind(plateau) == "plateau"
+        assert p.region_kind(spike) == "spike"
+        ctxs = p.search_contexts
+        pm = [sum(p.raw_score(plateau, c, r) for r in range(3)) / 3 for c in ctxs]
+        sm = [sum(p.raw_score(spike, c, r) for r in range(3)) / 3 for c in ctxs]
+        assert sum(sm) / len(sm) > sum(pm) / len(pm)   # spike lures on mean
+        assert min(sm) < min(pm)                        # and loses on the tail
+
+        d = ScalableDecoy(dim=dim, n_decoys=10)
+        assert len(d.parameter_space) == dim
+        assert d.region_kind({n: 0.28 for n in names}) == "true_edge"
+
+
 def test_pbo_ties_are_indifference_not_overfitting():
     """Identical candidates must give 0.50, not 1.00.
 
