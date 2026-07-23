@@ -188,6 +188,38 @@ def test_pbo_low_when_signal_is_real():
     assert result["pbo"] < 0.05, result["pbo"]
 
 
+def test_pbo_ties_are_indifference_not_overfitting():
+    """Identical candidates must give 0.50, not 1.00.
+
+    Regression: exact ties were counted as certain overfitting, so a landscape
+    where every candidate is the same reported maximum overfitting.
+    """
+    identical = [[1.0] * 10 for _ in range(32)]
+    result = pbo_cscv(identical, n_splits=8, metric=lambda xs: sum(xs) / len(xs))
+    assert abs(result["pbo"] - 0.5) < 1e-9, result["pbo"]
+
+
+def test_pbo_high_when_every_candidate_reverses():
+    matrix = []
+    for t in range(64):
+        sign = 1.0 if t < 32 else -1.0
+        matrix.append([sign * (j + 1) for j in range(10)])
+    result = pbo_cscv(matrix, n_splits=8, metric=lambda xs: sum(xs) / len(xs))
+    assert result["pbo"] > 0.6, result["pbo"]
+
+
+def test_cma_baseline_survives_tiny_budgets():
+    """Regression: truncating a CMA generation to fit the budget crashed the run."""
+    from narrs.benchmarks.baselines import cma_es
+    problem = PlateauSpikeProblem(n_search_contexts=4)
+    for budget in (1, 5, 40, 400):
+        result = cma_es(problem, problem.search_contexts, budget, reps=1, seed=0)
+        if result is None:
+            return  # cma not installed
+        assert result["point"] is not None
+        assert set(result["point"]) == {"x", "y"}
+
+
 def test_pbo_input_validation():
     for bad in ([], [[1.0]], [[1.0, 2.0], [1.0]]):
         try:

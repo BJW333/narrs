@@ -223,15 +223,47 @@ random seeds has been tested against nothing a market will actually do to it.
 `walk_forward_contexts` supports an `embargo` gap, because with autocorrelated
 data an embargo of zero quietly inflates every result.
 
-## Tests
+## Tests and verification
 
 ```bash
-python tests/test_additions.py      # 27 tests, no pytest required
+python tests/test_additions.py                                   # 30 unit tests
+python tests/verify_changes.py --original /path/to/old/package   # 13 integration checks
 ```
 
-Includes explicit backward-compatibility tests: the default aggregator is
-verified to equal `min` on random inputs, and existing config defaults are
-pinned.
+`test_additions.py` checks each new function in isolation. `verify_changes.py`
+tries to falsify the integration claims:
+
+1. **Equivalence** — runs an identical setup against an untouched copy of the
+   package and compares 19 reported fields at 12 decimal places. Currently
+   byte-identical, which is the actual guarantee that nothing existing changed.
+2. **Is the aggregator live?** — with the other dispersion penalties zeroed,
+   `worst_case` avoids a rare-catastrophe region and `mean` walks into it. The
+   seam demonstrably decides the answer.
+3. **PBO correctness** — identical candidates give 0.50, pure noise ~0.50, a
+   genuinely dominant candidate ~0.00, and a landscape where every candidate
+   reverses out of sample gives 0.74.
+4. **Seed robustness** — the benchmark result over 8 seeds rather than one.
+5. **Parallelism** — `n_jobs=1` and `n_jobs=-1` produce identical output.
+
+### What verification caught
+
+Worth reading before trusting any of the numbers above:
+
+- **The aggregator does not change the recommendation under default weights.**
+  It is live, but `context_instability` and `point_noise` respond to the same bad
+  contexts and dominate the score. Setting `context_aggregator="cvar"` expecting
+  less conservatism will not do much unless you also relax those weights.
+- **Single-seed results overstated NARRS.** Over 8 seeds it survives 8/8 on the
+  risk trap but **6/8** on the overfitting trap — it is fooled sometimes. Every
+  baseline survives 0/8 on both.
+- **Two bugs, both fixed and pinned by regression tests**: the CMA-ES baseline
+  crashed when a generation was truncated to fit the remaining budget, and PBO
+  returned 1.00 instead of 0.50 for a landscape of identical candidates because
+  exact ties were counted as certain overfitting.
+- **Write objectives with a stable digest, not `hash()`.** Python randomises
+  string hashing per process, so a `hash()`-seeded objective silently differs
+  across parallel workers and across runs. The verification harness caught this
+  in its own test code.
 
 ## Configuration
 

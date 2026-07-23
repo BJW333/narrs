@@ -151,10 +151,13 @@ def cma_es(
     used = 0
     while used < n_points and not es.stop():
         solutions = es.ask()
+        # A CMA-ES generation has to be told about every solution it asked for --
+        # truncating the population mid-generation corrupts the covariance update
+        # and the library rejects it outright. So stop *before* a generation that
+        # would not fit, and report the evaluations actually spent rather than
+        # pretending the full budget was used.
         if used + len(solutions) > n_points:
-            solutions = solutions[: n_points - used]
-            if not solutions:
-                break
+            break
         values = []
         for vector in solutions:
             p = to_params(vector)
@@ -164,6 +167,13 @@ def cma_es(
                 best_value, best_point = v, p
         es.tell(solutions, values)
         used += len(solutions)
+
+    if best_point is None:
+        # Budget too small for even one generation: fall back to the start point
+        # rather than returning None, which would silently drop the baseline.
+        best_point = to_params([0.5] * len(specs))
+        best_value = _mean_in_sample(problem, best_point, contexts, reps)
+        used = 1
 
     return {
         "name": "CMA-ES (in-sample mean)",

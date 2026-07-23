@@ -184,8 +184,14 @@ def pbo_cscv(
     if not logits:
         raise ValueError("no valid CSCV partitions were produced")
 
-    # PBO = P(logit <= 0) = P(winner lands at or below the OOS median).
-    pbo = sum(1 for x in logits if x <= 0.0) / len(logits)
+    # PBO = P(the in-sample winner lands at or below the out-of-sample median).
+    # A logit of exactly zero means the winner sits *on* the median, which is
+    # indifference, not evidence of overfitting -- counting it as a full hit
+    # would report PBO 1.0 for a landscape where every candidate is identical.
+    # Ties therefore count as half, matching the tie handling in the rank above.
+    below = sum(1 for x in logits if x < 0.0)
+    tied = sum(1 for x in logits if x == 0.0)
+    pbo = (below + 0.5 * tied) / len(logits)
     return {
         "pbo": pbo,
         "logits": logits,
