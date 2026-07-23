@@ -35,6 +35,22 @@ from .samplers import (
     CustomSampler,
 )
 from .validation import NARRSConfigurationError, validate_setup
+from .aggregators import (
+    ContextAggregator,
+    WorstCaseAggregator,
+    CVaRAggregator,
+    MeanStdAggregator,
+    MeanAggregator,
+    resolve_aggregator,
+)
+from .metrics import (
+    pbo_cscv,
+    deflated_sharpe,
+    probabilistic_sharpe,
+    oos_decay,
+    sharpe,
+    cvar,
+)
 
 __all__ = [
     "NoiseAwareRobustRegionSearch",
@@ -54,4 +70,22 @@ __all__ = [
     "CustomSampler",
     "NARRSConfigurationError",
     "validate_setup",
+    # context aggregation (pluggable robustness policy)
+    "ContextAggregator",
+    "WorstCaseAggregator",
+    "CVaRAggregator",
+    "MeanStdAggregator",
+    "MeanAggregator",
+    "resolve_aggregator",
+    # overfitting metrics
+    "pbo_cscv",
+    "deflated_sharpe",
+    "probabilistic_sharpe",
+    "oos_decay",
+    "sharpe",
+    "cvar",
 ]
+
+# narrs.benchmarks and narrs.adapters are deliberately NOT imported here.
+# Benchmarks pull in optional extras (optuna, cma) and adapters are
+# domain-specific; both stay opt-in so `import narrs` remains dependency-free.

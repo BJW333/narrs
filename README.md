@@ -101,6 +101,138 @@ Two guards are built in:
 - **Minimum holdout evidence** (`minimum_holdout_evidence`, default 5): a region needs at least this many valid holdout scores before it can be rated medium/high.
 - **Selection (multiple-testing) haircut**: because searching many regions and keeping the best inflates its apparent score by chance, the "high" bar is raised by the expected best-of-N fluke. `holdout_selection_penalty` shows how much.
 
+## Robustness policy: the context aggregator
+
+A point is scored under several contexts, and those per-context results have to
+be reduced to one robustness number. That reduction is a policy choice, and it's
+now pluggable rather than hard-coded.
+
+```python
+NARRSConfig(context_aggregator="cvar", context_aggregator_alpha=0.25)
+```
+
+| name | reduction | use when |
+|---|---|---|
+| `worst_case` *(default)* | `min` over contexts | few contexts, or any bad regime is disqualifying |
+| `cvar` | mean of the worst `alpha` fraction | many contexts, or the worst one is probably noise |
+| `mean_std` | `mean - alpha * std` | you want a symmetric dispersion penalty |
+| `mean` | plain mean | no robustness preference (the naive control) |
+
+You can also pass any object with `.aggregate(context_means, weights=None)` and
+`.name`. **The default reproduces the previous behaviour exactly** — `worst_case`
+is `min`, which is what NARRS always did — so existing setups are unaffected.
+
+One caveat worth knowing: CVaR at `alpha=0.25` over 4 contexts takes the worst 1,
+so it *is* `min`. The aggregators only separate once the tail holds more than one
+context.
+
+## Benchmark battery
+
+```bash
+pip install -e ".[bench]"        # optuna + cma for the comparison baselines
+python examples/run_battery.py
+```
+
+Two synthetic landscapes with a known right answer, because "robust" is a claim
+that needs testing against something that punishes the alternative:
+
+**Risk trap** — a broad steady plateau versus a region that pays more *on
+average* but collapses in a minority of regimes. Nothing is statistically
+unstable; the spike's high mean is entirely real and reproduces out of sample.
+It is simply undeployable.
+
+**Overfitting trap** — a modest but genuinely stationary edge among decoy peaks
+whose height is pure per-context luck. Average a decoy over a few contexts and it
+looks excellent; use fresh contexts and it evaporates.
+
+Every method gets the same number of objective calls — NARRS runs first and the
+baselines are given the budget it actually used. Results (seed 1):
+
+| landscape | random | Optuna TPE | CMA-ES | NARRS |
+|---|---|---|---|---|
+| risk trap | spike | spike | spike | **plateau** |
+| overfitting trap | decoy | decoy | decoy | **true edge** |
+
+On the risk trap, out-of-sample tail (CVaR@25%) is **0.64 for NARRS against 0.22–0.24**
+for the baselines — all three of which fail the survival bar. On the overfitting
+trap the baselines decay **0.20–0.22** from in-sample to out-of-sample while NARRS
+decays **0.002**.
+
+PBO is reported per landscape with the evaluation criterion held fixed and only
+the *selection rule* varying — scoring a tail-aware selector by out-of-sample
+mean would mark it down for declining to maximise something it is deliberately
+not maximising. On the risk trap, selecting by in-sample mean gives **PBO 0.81**
+against **0.43** for tail-aware selection.
+
+### An honest result about aggregators
+
+`python examples/run_battery.py` also runs an aggregator study, and it does not
+say what the "CVaR upgrade" framing would predict:
+
+- **Tail-vs-mean is the decision that matters.** Any tail-aware rule beats `mean`
+  by an enormous margin (PBO ~0.14–0.46 vs ~0.80), and the gap widens with more
+  contexts.
+- **CVaR does not beat plain worst-case when the tail is structural.** If some
+  regimes genuinely break the strategy, the sharper rule wins, and `worst_case` —
+  the existing default — is the sharpest. `cvar@0.50` gives most of the advantage
+  back by averaging real crashes together with good contexts.
+- **The ordering inverts when the tail is noise.** With no structurally bad
+  regime, `worst_case` becomes the *weakest* rule, because one unlucky context
+  dictates the entire score. That is where CVaR's tail-averaging pays.
+
+So there is no globally best aggregator, and CVaR is not a free upgrade. The
+choice encodes a belief about whether your bad contexts are signal or
+measurement error — which is exactly why it's a pluggable seam with a
+conservative default, rather than a replacement.
+
+## Overfitting metrics
+
+Usable independently of the optimizer, on any returns or performance series:
+
+```python
+from narrs.metrics import pbo_cscv, deflated_sharpe, oos_decay
+
+pbo_cscv(performance_matrix, n_splits=8)["pbo"]   # P(in-sample winner is below OOS median)
+deflated_sharpe(returns, n_trials=200)["dsr"]     # Sharpe, deflated for selection
+oos_decay(in_sample, out_of_sample)               # what evaporated
+```
+
+Pure standard library. `pbo_cscv` takes separate `is_metric` and `oos_metric` so
+you can ask whether one *selection policy* generalises better than another on the
+same landscape.
+
+## Trading adapter (optional)
+
+Core NARRS never imports this; the dependency runs one way only.
+
+```python
+from narrs.adapters.trading import CostModel, cost_stress_contexts, make_trading_objective
+
+contexts = cost_stress_contexts(
+    base_seeds=range(4),
+    slippage_bps=(1.0, 3.0, 6.0),
+    latency_seconds=(5.0, 7.0, 10.0),   # 7s default matches Kalshi
+)
+objective = make_trading_objective(my_strategy_returns, metric="cvar")
+```
+
+Contexts carry cost models and walk-forward windows through the existing
+`SearchContext.data` hook, so the optimizer is unchanged. The point is that seeds
+vary noise but not slippage, latency, or regime — a strategy that survives ten
+random seeds has been tested against nothing a market will actually do to it.
+`walk_forward_contexts` supports an `embargo` gap, because with autocorrelated
+data an embargo of zero quietly inflates every result.
+
+## Tests
+
+```bash
+python tests/test_additions.py      # 27 tests, no pytest required
+```
+
+Includes explicit backward-compatibility tests: the default aggregator is
+verified to equal `min` on random inputs, and existing config defaults are
+pinned.
+
 ## Configuration
 
 `NARRSConfig` has many knobs; the ones you'll actually touch:
@@ -134,8 +266,9 @@ Setups are checked at construction. A misconfiguration that would otherwise run 
 ## Limitations
 
 - **Holdout ≠ purged/embargoed cross-validation.** NARRS validates on held-out contexts, but it can't detect leakage *between* them. On autocorrelated time series, a "high" rating is only as trustworthy as the independence of the contexts you feed it. Separate your holdout periods properly.
-- **The confidence haircut is a composite-score correction, not a Sharpe-ratio p-value.** It's the right shape of multiple-testing adjustment for this estimator, but it doesn't replace a full Deflated-Sharpe / Probability-of-Backtest-Overfitting analysis on a returns series.
-- **Roadmap**: adaptive evaluation allocation (spend repetitions where ranking is hardest) and a Probability-of-Backtest-Overfitting (CSCV) estimate are planned to further cut evaluation cost and strengthen the overfitting diagnostics.
+- **The confidence haircut is a composite-score correction, not a Sharpe-ratio p-value.** It's the right shape of multiple-testing adjustment for this estimator. For a returns series, use `narrs.metrics.deflated_sharpe` and `narrs.metrics.pbo_cscv` directly instead.
+- **The benchmark landscapes are synthetic.** They isolate two specific failure modes with a known right answer, which is what makes them useful as a test. They are not evidence about any particular real market.
+- **Roadmap**: adaptive evaluation allocation (spend repetitions where ranking is hardest) remains open. Config self-tuning and a cross-run meta-learning layer are the intended next steps — the battery already emits the labelled records both would train on.
 
 ## License
 

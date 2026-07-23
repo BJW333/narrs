@@ -8,6 +8,7 @@ import warnings
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from .aggregators import ContextAggregator, resolve_aggregator
 from .clustering import dbscan_style_cluster, find_nearby_points
 from .grid import choose_points_inside_region
 from .samplers import BaseSampler, HybridSampler
@@ -158,6 +159,12 @@ class NoiseAwareRobustRegionSearch:
         self.parameter_constraints = list(parameter_constraints or [])
         self.config = config or NARRSConfig()
         self.rng = random.Random(self.config.random_seed)
+        # Resolved once so a bad aggregator name fails at construction time
+        # rather than deep inside the first scoring pass.
+        self.context_aggregator: ContextAggregator = resolve_aggregator(
+            self.config.context_aggregator,
+            self.config.context_aggregator_alpha,
+        )
         self.sampler = sampler or HybridSampler(
             initial_strategy="latin_hypercube",
             exploration_strategy="latin_hypercube",
@@ -660,7 +667,14 @@ class NoiseAwareRobustRegionSearch:
 
             context_means = [c.mean for c in r.context_results if c.scores]
             r.context_instability = safe_std(context_means)
-            r.context_worst_case = min(context_means) if context_means else 0.0
+            # Pluggable reduction over contexts. Default ("worst_case") is min,
+            # i.e. identical to the original behaviour; "cvar" averages the worst
+            # alpha-fraction instead, which is a stabler tail measure when there
+            # are many contexts. Despite the field name this holds whatever the
+            # configured aggregator returns.
+            r.context_worst_case = (
+                self.context_aggregator.aggregate(context_means) if context_means else 0.0
+            )
             r.context_failure_count = sum(
                 1 for m in context_means if m < self.config.minimum_acceptable_worst_case_score
             )
@@ -1089,6 +1103,7 @@ class NoiseAwareRobustRegionSearch:
             neighbor_radius_used=self.last_neighbor_radius,
             dbscan_minimum_points_per_region=self.last_min_points_per_region,
             number_of_trials_considered=n_trials_considered,
+            context_aggregator_used=self.context_aggregator.name,
             deflated_holdout_threshold=deflated_bar,
             holdout_selection_penalty=selection_penalty,
             warning_signs=warning_signs,

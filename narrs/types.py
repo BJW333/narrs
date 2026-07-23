@@ -252,6 +252,9 @@ class ConfidenceReport:
     # best was chosen from, and the raise applied to the "high" holdout bar to
     # offset best-of-N selection bias.
     number_of_trials_considered: int = 0
+    # Which context-aggregation policy produced the robustness numbers below.
+    # Provenance: two runs are only comparable if this matches.
+    context_aggregator_used: str = "worst_case"
     deflated_holdout_threshold: float = 0.0
     holdout_selection_penalty: float = 0.0
     warning_signs: List[str] = field(default_factory=list)
@@ -306,6 +309,17 @@ class NARRSConfig:
     minimum_neighborhood_mean: float = 0.0
     maximum_neighborhood_noise: float = 1.0
     maximum_spike_penalty: float = 1.0
+
+    # How per-context means are reduced to one robustness number. Either a
+    # builtin name ("worst_case", "cvar", "mean_std", "mean") or any object with
+    # .aggregate(context_means, weights=None) and .name. Default reproduces the
+    # original min-over-contexts behaviour exactly. Kept as a string by default
+    # so NARRSConfig stays flat and serialisable -- this config is itself meant
+    # to become a search space.
+    context_aggregator: Any = "worst_case"
+    # Parameter for the parameterised aggregators: tail fraction for "cvar",
+    # k for "mean_std". Ignored by "worst_case" and "mean".
+    context_aggregator_alpha: float = 0.25
 
     noise_penalty_weight: float = 1.25
     context_penalty_weight: float = 1.25
