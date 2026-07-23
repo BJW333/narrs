@@ -323,25 +323,32 @@ def check_pbo_properties() -> None:
 # 5. Parallel execution must not change results                                #
 # --------------------------------------------------------------------------- #
 PAR_PROBE = '''
-import json
+import json, sys
 from narrs import (NoiseAwareRobustRegionSearch, NARRSConfig, ParameterSpec,
                    MetricRule, SearchContext)
 from _par_objective import objective
-import sys
-n_jobs = int(sys.argv[1]); agg = sys.argv[2]
-cfg = NARRSConfig(search_rounds=2, initial_candidate_count=32, repetitions_per_point=2,
-                  total_compute_budget=3000, random_seed=7, n_jobs=n_jobs,
-                  context_aggregator=agg)
-o = NoiseAwareRobustRegionSearch(objective_function=objective,
-    parameter_space=[ParameterSpec("x",-5,5), ParameterSpec("y",-5,5)],
-    search_contexts=[SearchContext(n) for n in ("a","b","c")],
-    holdout_contexts=[SearchContext(n) for n in ("h1","h2")],
-    metric_rules={"score": MetricRule(good_value=1.0, bad_value=0.0)},
-    metric_weights={"score":1.0}, config=cfg)
-r = o.run()
-print(json.dumps({"c": r["recommended_center"],
-                  "s": round(r["best_region"].region_score,12) if r["best_region"] else None},
-                 sort_keys=True))
+
+def main():
+    n_jobs = int(sys.argv[1]); agg = sys.argv[2]
+    cfg = NARRSConfig(search_rounds=2, initial_candidate_count=32, repetitions_per_point=2,
+                      total_compute_budget=3000, random_seed=7, n_jobs=n_jobs,
+                      context_aggregator=agg)
+    o = NoiseAwareRobustRegionSearch(objective_function=objective,
+        parameter_space=[ParameterSpec("x",-5,5), ParameterSpec("y",-5,5)],
+        search_contexts=[SearchContext(n) for n in ("a","b","c")],
+        holdout_contexts=[SearchContext(n) for n in ("h1","h2")],
+        metric_rules={"score": MetricRule(good_value=1.0, bad_value=0.0)},
+        metric_weights={"score":1.0}, config=cfg)
+    r = o.run()
+    print(json.dumps({"c": r["recommended_center"],
+                      "s": round(r["best_region"].region_score,12) if r["best_region"] else None},
+                     sort_keys=True))
+
+# REQUIRED on spawn platforms (macOS, Windows). Without this guard the child
+# processes re-import __main__ and re-execute the whole script, which is a
+# RuntimeError -- not a NARRS fault, a property of multiprocessing.
+if __name__ == "__main__":
+    main()
 '''
 
 PAR_OBJECTIVE = '''
@@ -370,6 +377,8 @@ def check_parallel_determinism() -> None:
         probe = os.path.join(tmp, "par_probe.py")
         Path(probe).write_text(PAR_PROBE)
         env = dict(os.environ, PYTHONPATH=os.pathsep.join([here, tmp]))
+        import multiprocessing
+        print(f"     multiprocessing start method: {multiprocessing.get_start_method()}")
         for agg in ("worst_case", "cvar"):
             outs = []
             for n_jobs in ("1", "-1"):
@@ -378,11 +387,18 @@ def check_parallel_determinism() -> None:
                     env=env, capture_output=True, text=True, timeout=1800,
                 )
                 if proc.returncode != 0:
-                    record(f"parallel run ({agg})", False,
-                           (proc.stderr.strip().splitlines() or [""])[-1])
-                    return
+                    # Print the whole stderr, not the last line. On macOS the
+                    # last line is usually a resource_tracker shutdown warning
+                    # that trails the real traceback and tells you nothing.
+                    record(f"parallel run ({agg})", False, f"exit {proc.returncode}")
+                    print("       ---- subprocess stderr ----")
+                    for line in proc.stderr.strip().splitlines():
+                        print(f"       {line}")
+                    print("       ---------------------------")
+                    continue
                 outs.append(proc.stdout.strip())
-            record(f"serial == parallel with aggregator '{agg}'", outs[0] == outs[1])
+            if len(outs) == 2:
+                record(f"serial == parallel with aggregator '{agg}'", outs[0] == outs[1])
 
 
 # --------------------------------------------------------------------------- #

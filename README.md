@@ -288,6 +288,18 @@ Worth reading before trusting any of the numbers above:
 
 - **Speed**: with `scipy` installed, neighbor search uses a KD-tree (`O(n log n)`), which is dramatically faster than the brute-force fallback on large candidate sets while producing identical clusters. Install with `[fast]`.
 - **Parallelism**: set `NARRSConfig(n_jobs=-1)` to evaluate candidates across all CPU cores. Results are identical to serial. Your `objective_function` must be picklable (a module-level function, not a lambda/closure); if it isn't, NARRS warns and falls back to serial. Parallelism pays off when each objective call is expensive (real backtests) — for trivial objectives the process overhead makes it slower, which is why the default is `1`.
+- **macOS and Windows need a `__main__` guard for `n_jobs > 1`.** Those platforms start workers with `spawn`, not `fork`, and every worker re-imports your top-level script. Without the guard your script re-executes itself in each worker and the run dies with a `RuntimeError` about bootstrapping. Linux uses `fork` and is unaffected, so this only shows up when you move a working script to a Mac:
+
+  ```python
+  def main():
+      opt = NoiseAwareRobustRegionSearch(..., config=NARRSConfig(n_jobs=-1))
+      return opt.run()
+
+  if __name__ == "__main__":      # required on macOS/Windows
+      main()
+  ```
+
+  The same applies to the module holding your objective: it must be importable by name in a fresh interpreter.
 - **Reproducibility**: runs are deterministic from `random_seed`.
 - **Honest accounting**: `total_compute_budget` gates search only; the report separately shows `holdout_evaluations` so `total_objective_calls` reflects what you actually paid.
 
