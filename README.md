@@ -53,7 +53,17 @@ optimizer = NoiseAwareRobustRegionSearch(
     holdout_contexts=[SearchContext("oos_a"), SearchContext("oos_b")],
     metric_rules={"score": MetricRule(good_value=1.0, bad_value=0.0, higher_is_better=True)},
     metric_weights={"score": 1.0},
-    config=NARRSConfig(search_rounds=3, total_compute_budget=2000, n_jobs=1, random_seed=42),
+    config=NARRSConfig(
+        search_rounds=3,
+        total_compute_budget=2000,
+        # Scores are normalised 0..1 (0 = your bad_value, 1 = your good_value).
+        # Set the score a region must actually CLEAR to be trusted -- see
+        # "Stable is not the same as good" below for why leaving this at the
+        # 0.0 default is almost never what you want in production.
+        minimum_acceptable_holdout_score=0.5,
+        n_jobs=1,
+        random_seed=42,
+    ),
 )
 
 result = optimizer.run()
@@ -61,9 +71,15 @@ report = result["confidence_report"]
 
 print("Recommended center:", result["recommended_center"])
 print("Confidence rating :", report.final_confidence_rating)
+print("p_survive         :", report.p_survive, "(fragility warning -- see below)")
 print("Objective calls   :", report.total_objective_calls,
       f"(search {report.search_evaluations} + holdout {report.holdout_evaluations})")
 ```
+
+For a narrated end-to-end walkthrough on a toy landscape, run
+`python examples/how_it_works.py`. With `matplotlib` installed,
+`python examples/visualize.py` renders the landscape, calibration,
+noise-vs-survival, and decay figures.
 
 ## Core concepts
 
@@ -86,26 +102,43 @@ A dict:
 | `optional_region_ensemble` | a small ensemble of strong regions, if you want diversification |
 | `confidence_report` | a `ConfidenceReport` — see below |
 
-The **`ConfidenceReport`** carries the recommendation plus everything you need to trust it: `final_confidence_rating`, `best_region_parameter_ranges`, `number_of_surviving_regions`, `warning_signs`, honest call accounting (`search_evaluations`, `holdout_evaluations`, `total_objective_calls`), and the selection-adjustment fields (`number_of_trials_considered`, `deflated_holdout_threshold`, `holdout_selection_penalty`).
+The **`ConfidenceReport`** carries the recommendation plus everything you need to trust it: `final_confidence_rating`, `p_survive`, `fragility_index`, `best_region_parameter_ranges`, `number_of_surviving_regions`, `warning_signs`, honest call accounting (`search_evaluations`, `holdout_evaluations`, `total_objective_calls`), and the selection-adjustment fields (`number_of_trials_considered`, `deflated_holdout_threshold`, `holdout_selection_penalty`).
 
 ## Confidence ratings
 
-The rating is deliberately conservative — it's a statement about out-of-sample trust, not in-sample score:
+The rating is deliberately conservative — it's a statement about out-of-sample trust, not in-sample score. A region is rated **`high`** only if it clears *all* of:
 
-- **`high`** — the region cleared out-of-sample holdout validation with enough evidence *and* beat a selection-adjusted (Deflated-Sharpe-style) bar that accounts for how much searching was done.
-- **`medium`** — passed the raw holdout bar but not the stricter selection-adjusted one, or had no holdout available and was only strong in-sample.
-- **`low`** — insufficient out-of-sample evidence to trust. A region with too few valid holdout scores stays here by design (zero evidence never earns confidence).
+1. **The holdout bar, selection-adjusted.** Its holdout mean beats a Deflated-Sharpe-style bar raised by the expected best-of-N fluke from however much searching was done (`holdout_selection_penalty` shows the haircut).
+2. **The noise ceiling — measured twice.** `holdout_noise` must be low, *and* so must `region_noise`, the in-sample spread backed by every search point. The second check exists because a holdout noise reading from a few repetitions on a loud objective can look quiet by pure luck — adversarial testing found exactly this failure, with loud landscapes reading holdout noise well under the cap and then dying out of sample.
+3. **No regime shift.** The region's in-sample mean (`region_in_sample_mean`, same normalised scale as `holdout_mean`) may not sit more than `maximum_in_to_out_decay` above its holdout mean. A large drop means the holdout behaves like a different world than the search set — the region may be perfectly stable in each and still not transfer. When this fires you get an explicit `REGIME SHIFT:` warning.
+4. **Enough evidence.** At least `minimum_holdout_evidence` valid holdout scores; zero evidence never earns confidence.
 
-Two guards are built in:
+**`medium`** means it passed the raw holdout bar but failed one of the stricter gates above — each failure is named in `warning_signs`. **`low`** means insufficient out-of-sample evidence to trust.
 
-- **Minimum holdout evidence** (`minimum_holdout_evidence`, default 5): a region needs at least this many valid holdout scores before it can be rated medium/high.
-- **Selection (multiple-testing) haircut**: because searching many regions and keeping the best inflates its apparent score by chance, the "high" bar is raised by the expected best-of-N fluke. `holdout_selection_penalty` shows how much.
+### Stable is not the same as good
+
+Scores are normalised to 0..1, where 0 is *your* `bad_value` and 1 is *your* `good_value`. `minimum_acceptable_holdout_score` defaults to **0.0 — which is no performance bar at all**. Left there, a `high` rating asserts only that the region is *stable*, and a region can be rated confidently while scoring below the midpoint of your own metric range: stable and bad. NARRS warns loudly when this happens, but the warning is a backstop, not a substitute. **In production, always set `minimum_acceptable_holdout_score` to the normalised score you actually require** (0.5 is the midpoint between your `bad_value` and `good_value`). The permissive default exists for backward compatibility only.
+
+## p_survive: a sharp fragility warning
+
+Every `ConfidenceReport` also carries `p_survive` and `fragility_index`, from a logistic model fit against *realised* out-of-sample survival on the benchmark landscapes. The signal that separates survivors from failures turned out not to be score — NARRS only recommends regions it already trusts, so scores cluster far above any bar — but **noise**: failed regions carry several times the out-of-sample noise of survivors. The model consumes `effective_noise = max(holdout_noise, region_noise)`, `context_instability`, and the in-to-out `decay_gap`, and is refit against realised survival via `python tests/reliability.py --fit`.
+
+**Read `p_survive` as a fragility warning, not a literal probability.** The installed coefficients are deliberately the *sharp* (class-balanced) fit: at failure-typical noise levels it reads ~0.2 rather than a flattering ~0.6, at the cost of under-rating easy survivors somewhat. That trade is intentional and recorded in `narrs/psurvive.py` — this number is the training gradient for the planned self-tuning layers and an early warning for humans, while the `high`/`medium`/`low` label (with its gates above) carries the calibrated protection. About 90% of recommended regions survive, so a fit optimised for average calibration is precisely one that stays quiet where failures live.
+
+```python
+from narrs import estimate_survival, estimate_from_region
+
+est = estimate_from_region(result["best_region"])
+est.p_survive          # sharp fragility signal, 0..1
+est.fragility_index    # 0 robust .. 1 fragile
+est.signals            # the raw inputs, for inspection
+```
 
 ## Robustness policy: the context aggregator
 
 A point is scored under several contexts, and those per-context results have to
 be reduced to one robustness number. That reduction is a policy choice, and it's
-now pluggable rather than hard-coded.
+pluggable rather than hard-coded.
 
 ```python
 NARRSConfig(context_aggregator="cvar", context_aggregator_alpha=0.25)
@@ -119,7 +152,7 @@ NARRSConfig(context_aggregator="cvar", context_aggregator_alpha=0.25)
 | `mean` | plain mean | no robustness preference (the naive control) |
 
 You can also pass any object with `.aggregate(context_means, weights=None)` and
-`.name`. **The default reproduces the previous behaviour exactly** — `worst_case`
+`.name`. **The default reproduces the original behaviour exactly** — `worst_case`
 is `min`, which is what NARRS always did — so existing setups are unaffected.
 
 One caveat worth knowing: CVaR at `alpha=0.25` over 4 contexts takes the worst 1,
@@ -185,6 +218,39 @@ choice encodes a belief about whether your bad contexts are signal or
 measurement error — which is exactly why it's a pluggable seam with a
 conservative default, rather than a replacement.
 
+## Adversarial stress testing
+
+The scaling stress suite varies *difficulty*. The adversarial landscapes in
+`narrs/benchmarks/adversarial.py` do something different: each one **violates an
+assumption the confidence machinery rests on**, and the bar to clear is not
+"survive" — on several of them surviving is impossible. It is *refuse to claim
+high confidence while failing*.
+
+| landscape | assumption it attacks |
+|---|---|
+| `RegimeShift` | search and holdout are exchangeable — the optimum *moves* between them |
+| `CorrelatedContexts` | contexts are independent evidence — N near-duplicate contexts carry ~2 contexts of information |
+| `HeavyTailNoise` | noise is Gaussian and its sample sd is meaningful — calm until the jump |
+| `DeceptiveMultiModal` | in-sample robustness implies out-of-sample robustness — many identical-looking plateaus, one survivor |
+
+```bash
+python tests/stress_suite.py --axis adversarial
+```
+
+These landscapes are what found the two most dangerous behaviours this package
+has had — a `high` rating that meant "stable" while true out-of-sample
+performance was negative (the missing performance bar, now warned about and
+documented above), and regime-shifted regions rated `high` with saturated
+p_survive (a scale bug in the decay signal, now fixed and gated). Both are
+covered by the suite permanently: the pass condition is that the money-losing
+cells show **zero** high ratings.
+
+The one genuinely irreducible case: a regime shift that happens *after* your
+holdout window ends. No backtest can see the future. Mitigate it structurally —
+use `walk_forward_contexts` so the holdout *is* the future relative to search
+(making the measured decay a real estimate of live decay), and monitor live
+performance against that expectation.
+
 ## Overfitting metrics
 
 Usable independently of the optimizer, on any returns or performance series:
@@ -227,20 +293,22 @@ data an embargo of zero quietly inflates every result.
 
 ```bash
 python tests/acceptance.py --original /path/to/old/package       # go/no-go verdict
-python tests/test_additions.py                                   # 35 unit tests
-python tests/verify_changes.py --original /path/to/old/package   # 14 integration checks
+python tests/test_additions.py                                   # 39 unit tests
+python tests/verify_changes.py --original /path/to/old/package   # integration + A/B equivalence
 python tests/stress_suite.py --quick                             # scaling sweep + gates
+python tests/stress_suite.py --axis adversarial                  # assumption-violation suite
+python tests/reliability.py                                      # p_survive calibration (add --fit to refit)
 ```
 
 `acceptance.py` is the one to run before shipping — it ends in a single
-SAFE TO PUSH / DO NOT PUSH line and calls the other two as sub-steps.
+SAFE TO PUSH / DO NOT PUSH line and calls the other suites as sub-steps.
 
 `stress_suite.py` is the exploratory one: it answers *where does this start to
 fail*, sweeping dimensionality (2→8), context count (2→24), noise, compute
-budget and trap difficulty, with baselines at matched budget in every cell. It
-overlaps `acceptance.py` on calibration and dominance by design — acceptance
-gives a verdict on the shipping configuration, the stress suite maps the
-envelope around it.
+budget and trap difficulty, with baselines at matched budget in every cell —
+plus the adversarial axis above. It overlaps `acceptance.py` on calibration and
+dominance by design: acceptance gives a verdict on the shipping configuration,
+the stress suite maps the envelope around it.
 
 ### The number that actually matters
 
@@ -248,56 +316,53 @@ Not how often NARRS wins, but **how often it is confidently wrong**. A run that
 reports `medium` and then fails is the system working: it told you not to trust
 it. A run that reports `high` and fails is the only outcome that costs money.
 
-Measured over 24 runs (12 seeds x 2 landscapes):
+Current acceptance run (20 seeds × 2 landscapes):
 
 | stated rating | survived out of sample |
 |---|---|
-| `high` | 21/22 — **95%** |
-| `medium` | 0/2 — **0%** |
+| `high` | 32/32 — **100%** |
+| `medium` | 4/8 — 50% |
 
-The rating is informative, and that is the actual product claim. NARRS lands on
-the true edge 9/12 on the overfitting trap while every baseline manages 0–1/12 —
-but more importantly, the runs where it is fooled are the runs it declines to
-call `high`.
+Confident failures: **0 of 40 runs**. Across the full 46-cell stress sweep (276
+runs), every region rated `high` survived out of sample, while raw survival was
+87% — the gap absorbed by honest self-labelling. On the adversarial axis, the
+cells where survival is impossible show zero high ratings. The rating is
+informative, and that is the actual product claim.
 
-Stress-testing that by starving it of evidence (`n_search_contexts` from 6 down
-to 2), confident failures stay at 1–3 of 12 across the whole range. It degrades
+Stress-testing by starving it of evidence (`n_search_contexts` from 6 down to
+2), confident failures stay at worst 1 of 20 across the whole range. It degrades
 by losing confidence, not by getting confidently wrong.
-
-`test_additions.py` checks each new function in isolation. `verify_changes.py`
-tries to falsify the integration claims:
-
-1. **Equivalence** — runs an identical setup against an untouched copy of the
-   package and compares 19 reported fields at 12 decimal places. Currently
-   byte-identical, which is the actual guarantee that nothing existing changed.
-2. **Is the aggregator live?** — with the other dispersion penalties zeroed,
-   `worst_case` avoids a rare-catastrophe region and `mean` walks into it. The
-   seam demonstrably decides the answer.
-3. **PBO correctness** — identical candidates give 0.50, pure noise ~0.50, a
-   genuinely dominant candidate ~0.00, and a landscape where every candidate
-   reverses out of sample gives 0.74.
-4. **Seed robustness** — the benchmark result over 8 seeds rather than one.
-5. **Parallelism** — `n_jobs=1` and `n_jobs=-1` produce identical output.
 
 ### What verification caught
 
-Worth reading before trusting any of the numbers above:
+Worth reading before trusting any of the numbers above — every one of these was
+found by the test layers, fixed, and pinned by a regression test or a permanent
+suite cell:
 
+- **A "high" rating could mean stable-but-losing.** With no performance bar set
+  (the default), correlated-context landscapes earned `high` with negative true
+  out-of-sample performance. Now warned about explicitly; set the bar.
+- **Holdout noise can lie at few repetitions.** Loud objectives read quiet by
+  luck and rated `high` at 0–50% actual survival. Fixed by the second,
+  in-sample noise gate.
+- **The decay signal was on the wrong scale.** `region_score` (an unbounded
+  composite) was compared against the normalised `holdout_mean`, making the
+  regime-shift signal meaningless — it had even fit with a backwards-signed
+  coefficient. Fixed via `region_in_sample_mean`; regime shifts now cap the
+  rating with an explicit warning.
+- **A crashing user constraint looked like a failed search.** A
+  `parameter_constraints` function that raised was silently treated as "point
+  rejected", so a typo rejected every candidate and surfaced only as "no robust
+  region found". Now warns once per distinct error.
 - **The aggregator does not change the recommendation under default weights.**
   It is live, but `context_instability` and `point_noise` respond to the same bad
-  contexts and dominate the score. Setting `context_aggregator="cvar"` expecting
-  less conservatism will not do much unless you also relax those weights.
-- **Single-seed results overstated NARRS.** Over 8 seeds it survives 8/8 on the
-  risk trap but **6/8** on the overfitting trap — it is fooled sometimes. Every
-  baseline survives 0/8 on both.
-- **Two bugs, both fixed and pinned by regression tests**: the CMA-ES baseline
-  crashed when a generation was truncated to fit the remaining budget, and PBO
-  returned 1.00 instead of 0.50 for a landscape of identical candidates because
-  exact ties were counted as certain overfitting.
+  contexts and dominate the score.
+- **Single-seed results overstated NARRS** (6/8 on the overfitting trap over 8
+  seeds, not 8/8). Every baseline survives 0/8 on both landscapes.
 - **Write objectives with a stable digest, not `hash()`.** Python randomises
   string hashing per process, so a `hash()`-seeded objective silently differs
-  across parallel workers and across runs. The verification harness caught this
-  in its own test code.
+  across parallel workers and across runs. Use `zlib.crc32` on a formatted key —
+  the shipped examples and test objectives all do.
 
 ## Configuration
 
@@ -313,9 +378,12 @@ Worth reading before trusting any of the numbers above:
 | `random_seed` | 42 | reproducibility |
 | `minimum_region_size` | 3 | min points for a cluster to count as a region |
 | `minimum_region_width` | 0.05 | min normalized width (rejects razor spikes) |
-| `minimum_acceptable_holdout_score` | 0.0 | floor a region's holdout mean must clear |
+| `minimum_acceptable_holdout_score` | 0.0 | **the performance bar — set this** (0.0 = no bar; see "Stable is not the same as good") |
 | `minimum_holdout_evidence` | 5 | valid holdout scores required for medium/high |
 | `maximum_holdout_noise` | 1.0 | holdout-noise ceiling |
+| `high_confidence_max_in_sample_noise` | 0.08 | in-sample noise ceiling for `high` (guards against lucky-quiet holdout readings) |
+| `maximum_in_to_out_decay` | 0.15 | max in-sample → holdout drop before `high` is refused as a regime shift |
+| `context_aggregator` | `worst_case` | robustness reduction policy (see Aggregators) |
 | `verbose` | False | per-round logging |
 
 ## Performance & reproducibility
@@ -339,14 +407,16 @@ Worth reading before trusting any of the numbers above:
 
 ## Validation
 
-Setups are checked at construction. A misconfiguration that would otherwise run silently and produce a misleading result — a typo'd metric-weight key that drops an objective, an inverted or degenerate parameter range, a negative weight, a duplicate parameter name, empty required inputs — raises a clear `NARRSConfigurationError` immediately. Softer issues (no holdout provided, a metric with a rule but no weight and no hard rule) emit warnings. To skip validation, pass `validate=False` to the constructor.
+Setups are checked at construction. A misconfiguration that would otherwise run silently and produce a misleading result — a typo'd metric-weight key that drops an objective, an inverted or degenerate parameter range, a negative weight, a duplicate parameter name, empty required inputs — raises a clear `NARRSConfigurationError` immediately. Softer issues (no holdout provided, a metric with a rule but no weight and no hard rule) emit warnings. A `parameter_constraints` function that raises is treated as rejecting the point *and* warned about, so a broken filter can't masquerade as an empty search. To skip validation, pass `validate=False` to the constructor.
 
 ## Limitations
 
 - **Holdout ≠ purged/embargoed cross-validation.** NARRS validates on held-out contexts, but it can't detect leakage *between* them. On autocorrelated time series, a "high" rating is only as trustworthy as the independence of the contexts you feed it. Separate your holdout periods properly.
+- **A regime shift after your holdout window is invisible to any backtest.** NARRS detects and refuses shifts *between* search and holdout, but nothing can validate against a future that hasn't happened. Use `walk_forward_contexts` so measured decay estimates live decay, and monitor deployed performance against it.
+- **`p_survive` is a fragility warning, not a calibrated probability.** The sharp fit is installed deliberately (see the note in `narrs/psurvive.py`); the `high`/`medium`/`low` label is the calibrated statement.
 - **The confidence haircut is a composite-score correction, not a Sharpe-ratio p-value.** It's the right shape of multiple-testing adjustment for this estimator. For a returns series, use `narrs.metrics.deflated_sharpe` and `narrs.metrics.pbo_cscv` directly instead.
-- **The benchmark landscapes are synthetic.** They isolate two specific failure modes with a known right answer, which is what makes them useful as a test. They are not evidence about any particular real market.
-- **Roadmap**: adaptive evaluation allocation (spend repetitions where ranking is hardest) remains open. Config self-tuning and a cross-run meta-learning layer are the intended next steps — the battery already emits the labelled records both would train on.
+- **The benchmark landscapes are synthetic.** They isolate specific failure modes with a known right answer, which is what makes them useful as tests. They are not evidence about any particular real market.
+- **Roadmap**: adaptive evaluation allocation (spend repetitions where ranking is hardest) remains open. Config self-tuning and a cross-run meta-learning layer are the intended next steps — the battery already emits the labelled records both would train on, and the confidence signal they would tune against is now hardened.
 
 ## License
 
