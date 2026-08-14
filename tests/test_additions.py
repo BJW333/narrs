@@ -195,9 +195,14 @@ def test_psurvive_flags_noisy_regions_as_fragile():
                               in_sample_score=0.85, holdout_mean=0.84)
     noisy = estimate_survival(holdout_noise=0.45, context_instability=0.12,
                               in_sample_score=0.85, holdout_mean=0.60)
-    assert clean.p_survive > 0.75, clean.p_survive
-    assert noisy.p_survive < clean.p_survive
-    assert noisy.p_survive < 0.75, noisy.p_survive
+    # Thresholds match the SHARP (class-balanced) coefficient regime -- see the
+    # DELIBERATE CHOICE note in narrs/psurvive.py. Sharp under-rates survivors a
+    # little (clean ~0.74, not ~0.80) in exchange for actually flagging fragile
+    # regions (noisy ~0.12, previously a useless 0.57). The property this test
+    # protects is the SEPARATION, and it got much stronger.
+    assert clean.p_survive > 0.60, clean.p_survive
+    assert noisy.p_survive < 0.35, noisy.p_survive
+    assert clean.p_survive - noisy.p_survive > 0.30, (clean.p_survive, noisy.p_survive)
     # probabilities stay in range and fragility index is bounded
     for e in (clean, noisy):
         assert 0.0 <= e.p_survive <= 1.0
