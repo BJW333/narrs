@@ -9,6 +9,31 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .aggregators import ContextAggregator, resolve_aggregator
+from .psurvive import estimate_from_region as _estimate_from_region
+
+
+def _psurvive_for(region):
+    if region is None:
+        return float("nan")
+    try:
+        return _estimate_from_region(region).p_survive
+    except Exception as exc:
+        # Never let a p_survive failure take down a run, but never hide it either:
+        # a silent nan is indistinguishable from "nothing to say".
+        warnings.warn(f"p_survive could not be computed: {type(exc).__name__}: {exc}",
+                      RuntimeWarning, stacklevel=2)
+        return float("nan")
+
+
+def _fragility_for(region):
+    if region is None:
+        return float("nan")
+    try:
+        return _estimate_from_region(region).fragility_index
+    except Exception as exc:
+        warnings.warn(f"fragility_index could not be computed: {type(exc).__name__}: {exc}",
+                      RuntimeWarning, stacklevel=2)
+        return float("nan")
 from .clustering import dbscan_style_cluster, find_nearby_points
 from .grid import choose_points_inside_region
 from .samplers import BaseSampler, HybridSampler
@@ -185,6 +210,7 @@ class NoiseAwareRobustRegionSearch:
 
         self.early_stopped = False
         self.compute_budget_reached = False
+        self._constraint_errors_seen: set = set()
         self.search_rounds_completed = 0
         self.last_neighbor_radius = 0.0
         self.last_min_points_per_region = 0
@@ -346,7 +372,21 @@ class NoiseAwareRobustRegionSearch:
             try:
                 if not fn(point):
                     return False
-            except Exception:
+            except Exception as exc:
+                # A constraint that RAISES is a broken constraint, not a point that
+                # fails the rule. Silently returning False rejects every candidate
+                # and surfaces only as "no robust region found", which sends the
+                # user hunting a search problem that is really a typo in their own
+                # filter. Warn once per distinct error so it is visible.
+                signature = f"{type(exc).__name__}: {exc}"
+                if signature not in self._constraint_errors_seen:
+                    self._constraint_errors_seen.add(signature)
+                    warnings.warn(
+                        f"parameter_constraints function raised {signature} -- "
+                        "treating the point as rejected. Every candidate will be "
+                        "rejected if this keeps happening; check the constraint.",
+                        RuntimeWarning, stacklevel=2,
+                    )
                 return False
         return True
 
@@ -770,6 +810,8 @@ class NoiseAwareRobustRegionSearch:
         context_instabilities = [p.context_instability for p in region.points]
 
         region.region_average_score = safe_mean(robust_scores)
+        # Comparable to holdout_mean (same normalised 0..1 basis); see types.py.
+        region.region_in_sample_mean = safe_mean([p.point_mean for p in region.points])
         region.region_stability = safe_std(robust_scores)
         region.region_worst_case = min(robust_scores) if robust_scores else 0.0
         region.region_noise = safe_mean(point_noises)
@@ -1100,17 +1142,75 @@ class NoiseAwareRobustRegionSearch:
                     and confidence_interval_width(best_region.holdout_confidence_interval)
                     <= self.config.maximum_confidence_interval_width
                 )
-                if best_region.holdout_mean >= deflated_bar and meets_noise_and_ci:
+                # holdout_noise alone can read low by chance when the objective is
+                # loud and few reps were averaged per context -- confirmed on the
+                # stress suite: sd=0.6 landscapes read holdout_noise 0.10-0.20 (under
+                # the 0.25 cap) and still failed out of sample. region_noise is the
+                # in-sample spread backed by every search point, and separates those
+                # cases cleanly, so require it too before granting "high".
+                # A large in-sample -> out-of-sample drop means the holdout came
+                # from a different world than the search set. The region may be
+                # perfectly stable within each; it just does not transfer. This is
+                # the regime-shift signature and it must block a "high" rating.
+                in_to_out_decay = (best_region.region_in_sample_mean
+                                   - best_region.holdout_mean)
+                no_regime_shift = in_to_out_decay <= self.config.maximum_in_to_out_decay
+                region_noise_is_trustworthy = (
+                    best_region.region_noise
+                    <= self.config.high_confidence_max_in_sample_noise
+                )
+                if (best_region.holdout_mean >= deflated_bar and meets_noise_and_ci
+                        and region_noise_is_trustworthy and no_regime_shift):
                     confidence_rating = "high"
                 elif best_region.holdout_mean >= base_bar:
                     confidence_rating = "medium"
-                    if meets_noise_and_ci and best_region.holdout_mean < deflated_bar:
+                    if not no_regime_shift:
+                        warning_signs.append(
+                            f"REGIME SHIFT: in-sample mean "
+                            f"{best_region.region_in_sample_mean:.3f} vs holdout mean "
+                            f"{best_region.holdout_mean:.3f} (drop "
+                            f"{in_to_out_decay:.3f} > "
+                            f"{self.config.maximum_in_to_out_decay:.3f}). The holdout "
+                            f"behaves like a different regime than the search set, so "
+                            f"in-sample robustness does not transfer. Rating capped."
+                        )
+                    if (meets_noise_and_ci and not region_noise_is_trustworthy
+                            and best_region.holdout_mean >= deflated_bar):
+                        warning_signs.append(
+                            f"In-sample region noise ({best_region.region_noise:.3f}) "
+                            f"exceeds {self.config.high_confidence_max_in_sample_noise:.3f}: "
+                            f"the objective looks loud enough that the holdout noise "
+                            f"reading ({best_region.holdout_noise:.3f}) may be an "
+                            f"underestimate. Rating held at 'medium'."
+                        )
+                    elif meets_noise_and_ci and best_region.holdout_mean < deflated_bar:
                         warning_signs.append(
                             f"Selection-adjusted (deflated) holdout bar not met: chose the best "
                             f"of {n_trials_considered} regions, raising the 'high' bar from "
                             f"{base_bar:.3f} to {deflated_bar:.3f} (holdout mean "
                             f"{best_region.holdout_mean:.3f}); rating reduced to 'medium'."
                         )
+
+        # A "high"/"medium" rating means the region is STABLE and cleared
+        # minimum_acceptable_holdout_score. That bar defaults to 0.0, which on the
+        # normalised 0..1 scale is no bar at all (0.0 = the user's stated
+        # bad_value). A region can therefore be rated confidently while scoring
+        # below the midpoint of its own metric range -- i.e. stable and bad.
+        # Adversarial testing hit exactly this: 8/8 runs rated "high" whose true
+        # out-of-sample score was negative. Say so rather than let "high" be read
+        # as "good".
+        if (best_region is not None and confidence_rating in ("high", "medium")
+                and best_region.holdout_mean < 0.5
+                and self.config.minimum_acceptable_holdout_score <= 0.0):
+            warning_signs.append(
+                f"Rated '{confidence_rating}' but the holdout mean "
+                f"({best_region.holdout_mean:.3f}) is below the midpoint of the "
+                f"metric range, and minimum_acceptable_holdout_score is "
+                f"{self.config.minimum_acceptable_holdout_score} (no performance "
+                f"bar). This rating means the region is STABLE, not that it is "
+                f"GOOD. Set minimum_acceptable_holdout_score to the score you "
+                f"actually require."
+            )
 
         return ConfidenceReport(
             best_region_parameter_ranges=ranges,
@@ -1142,5 +1242,7 @@ class NoiseAwareRobustRegionSearch:
             holdout_selection_penalty=selection_penalty,
             warning_signs=warning_signs,
             final_confidence_rating=confidence_rating,
+            p_survive=_psurvive_for(best_region),
+            fragility_index=_fragility_for(best_region),
             raw=raw,
         )

@@ -22,6 +22,7 @@ import json
 import math
 import os
 import random
+import zlib
 import statistics
 import subprocess
 import sys
@@ -177,7 +178,10 @@ def _rare_outlier_objective(params, context, rep):
     b = math.exp(-0.5 * ((x - 0.75) / 0.10) ** 2)
     va = (-2.0 if context.name == _BAD_CONTEXT else 0.95) * a
     vb = 0.72 * b
-    rng = random.Random(hash((context.name, rep, round(x, 6))) % (2 ** 31))
+    # NOT hash(): this file warns about exactly this hazard in its own notes --
+    # Python randomises string hashing per process, so hash-seeded noise is not
+    # reproducible across runs. crc32 is stable.
+    rng = random.Random(zlib.crc32(f"{context.name}|{rep}|{x:.6f}".encode()))
     return ObjectiveResult(
         performance_metrics={"score": va + vb + rng.gauss(0, 0.02)}, sample_count=1
     )

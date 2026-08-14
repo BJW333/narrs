@@ -56,6 +56,12 @@ from narrs import (  # noqa: E402
 from narrs.benchmarks import baselines as B  # noqa: E402
 from narrs.benchmarks.battery import _judge  # noqa: E402
 from narrs.benchmarks.scalable import ScalableDecoy, ScalablePlateauSpike  # noqa: E402
+from narrs.benchmarks.adversarial import (  # noqa: E402
+    CorrelatedContexts,
+    DeceptiveMultiModal,
+    HeavyTailNoise,
+    RegimeShift,
+)
 from narrs.validation import NARRSConfigurationError  # noqa: E402
 
 
@@ -295,6 +301,30 @@ def axis_difficulty(seeds: int, quick: bool, baselines: bool) -> None:
 # --------------------------------------------------------------------------- #
 # G4 determinism / G5 edge cases                                               #
 # --------------------------------------------------------------------------- #
+def axis_adversarial(seeds: int, quick: bool, baselines: bool) -> None:
+    """Landscapes that attack NARRS's assumptions rather than its difficulty.
+
+    Every other axis draws search and holdout contexts from the SAME
+    distribution. Real objectives do not. These cells break that assumption on
+    purpose, and the bar to clear is NOT "survive" -- on several of them
+    surviving is impossible. It is "do not claim high confidence while failing".
+    """
+    print("\n" + "=" * 100)
+    print("AXIS: ADVERSARIAL -- assumptions violated on purpose")
+    print("  Passing here means refusing to be confident, not being right.")
+    print("=" * 100)
+    cells = [
+        ("regime-shift", RegimeShift),
+        ("regime-big", lambda: RegimeShift(shift=0.6)),
+        ("correlated-ctx", CorrelatedContexts),
+        ("heavy-tail", HeavyTailNoise),
+        ("deceptive", DeceptiveMultiModal),
+    ]
+    print_cell_header("adversarial")
+    for label, make in cells:
+        print_cell(run_cell("adversarial", label, make, seeds, with_baselines=baselines))
+
+
 def check_determinism() -> None:
     print("\n" + "=" * 100)
     print("G4 DETERMINISM -- the same seed must give the same answer")
@@ -492,7 +522,8 @@ def main() -> int:
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--axis", default="all",
                         choices=["all", "dims", "contexts", "noise", "budget",
-                                 "difficulty", "edge", "determinism"])
+                                 "difficulty", "adversarial", "edge",
+                                 "determinism"])
     parser.add_argument("--no-baselines", action="store_true")
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
@@ -508,6 +539,7 @@ def main() -> int:
     axes = {
         "dims": axis_dimensions, "contexts": axis_contexts, "noise": axis_noise,
         "budget": axis_budget, "difficulty": axis_difficulty,
+        "adversarial": axis_adversarial,
     }
     if args.axis in ("all", "determinism"):
         check_determinism()

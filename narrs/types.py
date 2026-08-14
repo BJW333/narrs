@@ -208,6 +208,13 @@ class Region:
 
     region_score: float = 0.0
     region_average_score: float = 0.0
+    # Mean of the region's plain normalised point scores (0..1), i.e. the SAME
+    # quantity and scale as holdout_mean. region_average_score is NOT comparable
+    # to holdout_mean -- it averages robust_score, a composite that adds
+    # worst_case_weight * context_worst_case and subtracts penalties, so it runs
+    # on a different scale entirely. Use this field for any in-sample vs
+    # out-of-sample comparison.
+    region_in_sample_mean: float = 0.0
     region_stability: float = 0.0
     region_worst_case: float = 0.0
     region_noise: float = 0.0
@@ -275,6 +282,8 @@ class ConfidenceReport:
     holdout_selection_penalty: float = 0.0
     warning_signs: List[str] = field(default_factory=list)
     final_confidence_rating: str = "low"
+    p_survive: float = float("nan")
+    fragility_index: float = float("nan")
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -315,11 +324,33 @@ class NARRSConfig:
     maximum_confidence_interval_width: float = 1.0
 
     minimum_acceptable_worst_case_score: float = 0.0
+    # The holdout score a region must clear to be rated "medium" or "high".
+    # NOTE: scores are normalised to 0..1 by MetricRule (0.0 = your bad_value,
+    # 1.0 = your good_value), so the 0.0 default is NO PERFORMANCE BAR AT ALL --
+    # it only requires that the region be stable. If you need "high" to mean
+    # "good", set this to the normalised score you actually require (0.5 is the
+    # midpoint between your bad_value and good_value). Left at 0.0, NARRS warns
+    # when it rates a region confidently while that region scores below the
+    # midpoint -- see core.py's rating logic. This default is kept permissive for
+    # backward compatibility, not because it is a sensible production setting.
     minimum_acceptable_holdout_score: float = 0.0
     # Minimum number of valid holdout scores required before a "medium" or "high"
     # rating can be granted. Guards against rating a region confidently when its
     # holdout produced no evidence (zero-filled stats trivially pass the checks).
     minimum_holdout_evidence: int = 5
+    # A holdout noise reading can look low by chance when it comes from few reps
+    # on a loud objective. region_noise (in-sample, backed by every search point)
+    # must also clear this before "high" is granted -- see core.py rating logic.
+    # Calibrated from the stress suite: failures read ~0.11-0.19, healthy runs
+    # ~0.01-0.05, so 0.08 sits in the gap.
+    high_confidence_max_in_sample_noise: float = 0.08
+    # How far the region's out-of-sample mean may fall below its in-sample mean
+    # (both normalised 0..1) before NARRS refuses to call it "high". A large drop
+    # is the signature of a REGIME SHIFT: the region is fine, but the world the
+    # holdout came from is not the world it was fit in. Measured on the
+    # adversarial RegimeShift landscape: a genuine shift produces ~0.33 decay,
+    # while unshifted and healthy landscapes produce ~0.00.
+    maximum_in_to_out_decay: float = 0.15
     maximum_context_failure_count: int = 0
 
     minimum_neighborhood_mean: float = 0.0

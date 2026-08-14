@@ -43,6 +43,12 @@ from .aggregators import (
     MeanAggregator,
     resolve_aggregator,
 )
+from .psurvive import (
+    estimate_survival,
+    estimate_from_region,
+    rating_from_p_survive,
+    SurvivalEstimate,
+)
 from .metrics import (
     pbo_cscv,
     deflated_sharpe,
@@ -84,6 +90,10 @@ __all__ = [
     "oos_decay",
     "sharpe",
     "cvar",
+    "estimate_survival",
+    "estimate_from_region",
+    "rating_from_p_survive",
+    "SurvivalEstimate",
 ]
 
 # narrs.benchmarks and narrs.adapters are deliberately NOT imported here.
