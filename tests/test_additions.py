@@ -42,6 +42,7 @@ from narrs.adapters.trading import (
     returns_to_score,
     walk_forward_contexts,
 )
+from narrs.psurvive import estimate_survival, rating_from_p_survive, fit_logistic
 from narrs.benchmarks.problems import (
     DecoyOverfittingProblem,
     PlateauSpikeProblem,
@@ -186,6 +187,47 @@ def test_pbo_low_when_signal_is_real():
         matrix.append(row)
     result = pbo_cscv(matrix, n_splits=8, metric=lambda xs: sum(xs) / len(xs))
     assert result["pbo"] < 0.05, result["pbo"]
+
+
+def test_psurvive_flags_noisy_regions_as_fragile():
+    """A clean region scores high; a noisy one scores low. Noise is the signal."""
+    clean = estimate_survival(holdout_noise=0.04, context_instability=0.02,
+                              in_sample_score=0.85, holdout_mean=0.84)
+    noisy = estimate_survival(holdout_noise=0.45, context_instability=0.12,
+                              in_sample_score=0.85, holdout_mean=0.60)
+    assert clean.p_survive > 0.75, clean.p_survive
+    assert noisy.p_survive < clean.p_survive
+    assert noisy.p_survive < 0.75, noisy.p_survive
+    # probabilities stay in range and fragility index is bounded
+    for e in (clean, noisy):
+        assert 0.0 <= e.p_survive <= 1.0
+        assert 0.0 <= e.fragility_index <= 1.0
+
+
+def test_psurvive_monotonic_in_noise():
+    """Increasing holdout noise must never raise p_survive."""
+    prev = 1.1
+    for noise in (0.02, 0.1, 0.2, 0.35, 0.5, 0.8):
+        p = estimate_survival(noise, 0.03, 0.8, 0.78).p_survive
+        assert p <= prev + 1e-9, f"p_survive rose with noise at {noise}"
+        prev = p
+
+
+def test_rating_from_p_survive_bands():
+    assert rating_from_p_survive(0.95) == "high"
+    assert rating_from_p_survive(0.6) == "medium"
+    assert rating_from_p_survive(0.2) == "low"
+
+
+def test_fit_logistic_recovers_a_known_boundary():
+    """Sanity: on separable data the fit puts the coefficient in the right direction."""
+    rows = []
+    for i in range(200):
+        noise = (i % 20) / 20.0            # 0..1
+        survived = noise < 0.4             # clean survives, noisy fails
+        rows.append({"holdout_noise": noise, "survived": survived})
+    coeffs = fit_logistic(rows, signal_keys=("holdout_noise",))
+    assert coeffs["holdout_noise"] < 0, "more noise should lower survival odds"
 
 
 def test_nan_never_scores_as_perfect():
