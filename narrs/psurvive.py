@@ -68,12 +68,16 @@ _DEFAULT_COEFFS = {
     # (fit_logistic(..., balance_classes=True)) moves the 50% crossover from
     # noise 0.52 to 0.18 and reads 0.20 at the average failure, but then
     # under-rates survivors too (ECE ~0.20). Sharpness and calibration trade off
-    # here; the calibrated fit is the default because this value is named, and
-    # read, as a probability.
-    "intercept": 1.673,
-    "context_instability": -0.431,
-    "effective_noise": -3.222,
-    "decay_gap": 0.761,
+    # here. DELIBERATE CHOICE (2026-08-14): SHARP (class-balanced) is the
+    # installed default. p_survive's job is the training gradient for the
+    # self-tuning layers and an early warning for fragile regions; the
+    # high/medium/low label (noise gate + regime gate + bar warning) already
+    # carries the calibrated protection. Read this value as a fragility
+    # warning, not a literal probability.
+    "intercept": 1.358,
+    "context_instability": -1.194,
+    "effective_noise": -7.367,
+    "decay_gap": 0.354,
 }
 
 # Scales that turn a raw signal into its z (roughly "how many bad-units").
