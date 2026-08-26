@@ -107,7 +107,14 @@ def main() -> None:
         metric_weights={"score": 1.0},
         config=NARRSConfig(search_rounds=3, initial_candidate_count=40,
                            repetitions_per_point=3, total_compute_budget=6000,
-                           random_seed=1, context_aggregator="cvar"),
+                           random_seed=1, context_aggregator="cvar",
+                           # THE one config field you must always set. Scores are
+                           # normalised 0..1; 0.5 is the midpoint between your
+                           # bad_value and good_value. Without this, "high" only
+                           # means STABLE -- a region can be confidently rated
+                           # while performing badly. See "Stable is not the same
+                           # as good" in the README.
+                           minimum_acceptable_holdout_score=0.5),
     )
     result = opt.run()
     report = result["confidence_report"]
@@ -142,12 +149,14 @@ def main() -> None:
     h("STEP 6  -  how much to trust it")
     print(f"  label (high/medium/low)  : {report.final_confidence_rating}")
     est = estimate_from_region(region)
-    print(f"  p_survive (calibrated)   : {est.p_survive:.2f}")
+    print(f"  p_survive (fragility)    : {est.p_survive:.2f}")
     print(f"  fragility index          : {est.fragility_index:.2f}  (0 robust .. 1 fragile)")
-    print("\n  p_survive is the probability this region stays good when the regime")
-    print("  changes, calibrated against real survival on the benchmark battery.")
-    print("  It is driven mostly by out-of-sample noise -- the single best")
-    print("  predictor of whether a region holds up live.")
+    print("\n  p_survive is a SHARP fragility warning, fit against real survival on")
+    print("  the benchmark battery with failures weighted up so fragile regions")
+    print("  actually read as fragile. Read it as a warning signal, not a literal")
+    print("  probability -- the high/medium/low label above carries the calibrated")
+    print("  claim. It is driven mostly by noise, the single best predictor of")
+    print("  whether a region holds up live.")
     if report.warning_signs:
         print("\n  warnings NARRS attached to this result:")
         for w in report.warning_signs:
@@ -155,10 +164,12 @@ def main() -> None:
 
     h("SUMMARY")
     print("  NARRS explored a noisy landscape, refused the tall-but-fragile spike,")
-    print("  recommended the broad stable plateau, and told you how much to trust it")
-    print("  with a calibrated probability. That is the whole idea: not the highest")
-    print("  score, but the score that survives contact with reality.")
-    print("\n  Next: examples/run_battery.py (proof vs baselines) or")
+    print("  recommended the broad stable plateau, and told you how much to trust")
+    print("  it -- a conservative label plus a sharp fragility warning. That is the")
+    print("  whole idea: not the highest score, but the score that survives")
+    print("  contact with reality.")
+    print("\n  Next: examples/when_narrs_says_no.py (watch it refuse bad landscapes),")
+    print("  examples/run_battery.py (proof vs baselines), or")
     print("  tests/stress_suite.py (where it starts to break).")
 
 

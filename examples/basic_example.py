@@ -66,6 +66,8 @@ if __name__ == "__main__":
         SearchContext("normal"),
         SearchContext("hard_context"),
         SearchContext("alternate"),
+        SearchContext("late_regime"),
+        SearchContext("stress"),
     ]
 
     holdout_contexts = [
@@ -81,15 +83,18 @@ if __name__ == "__main__":
 
     config = NARRSConfig(
         search_rounds=3,
-        initial_grid_density=5,
-        total_compute_budget=2000,
+        initial_grid_density=9,
+        total_compute_budget=12000,
         minimum_region_size=3,
         minimum_region_width=0.03,
         minimum_sample_size=1,
         maximum_allowed_noise=0.50,
         maximum_confidence_interval_width=1.0,
         minimum_acceptable_worst_case_score=0.0,
-        minimum_acceptable_holdout_score=0.0,
+        # Always set the bar: scores are normalised 0..1, so 0.5 is the
+        # midpoint of your own metric range. Without it, "high" only means
+        # STABLE, not GOOD (see "Stable is not the same as good" in the README).
+        minimum_acceptable_holdout_score=0.5,
         verbose=True,
     )
 
@@ -113,6 +118,9 @@ if __name__ == "__main__":
 
     print("\nConfidence rating:")
     print(result["confidence_report"].final_confidence_rating)
+
+    print("\np_survive (sharp fragility warning; the rating above carries the calibrated claim):")
+    print(round(result["confidence_report"].p_survive, 2))
 
     print("\nWarnings:")
     print(result["confidence_report"].warning_signs)
