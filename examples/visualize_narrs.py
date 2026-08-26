@@ -1,11 +1,12 @@
 """
-NARRS visualizer, refined version.
+Visualize the SEARCH side of NARRS -- the landscape, what was explored, why the
+plateau beat the spike. (For the confidence side -- p_survive calibration,
+noise-vs-survival, decay -- use examples/visualize.py; the two are
+complementary.)
 
 Run from inside your narrs_package folder:
 
-    python3.10 visualize_narrs_refined.py
-
-This version is designed to be easier to understand than the previous plots.
+    python examples/visualize_narrs.py
 
 It separates the pictures into:
 

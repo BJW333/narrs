@@ -1,5 +1,9 @@
 """
-Visualize what NARRS is doing. Saves PNGs you can put in a README or an audit.
+Visualize the CONFIDENCE side of NARRS -- trust, fragility, noise, decay.
+(For the search/landscape story -- what was explored and why the plateau won --
+use examples/visualize_narrs.py; the two are complementary.)
+
+Saves PNGs you can put in a README or an audit.
 
     python examples/visualize.py                 # writes to ./narrs_figures/
     python examples/visualize.py --out /some/dir
@@ -11,8 +15,10 @@ Four figures, each answering a question a skeptic would actually ask:
      drawn on top. Shows it avoiding the fragile spike and settling on the
      stable plateau.
 
-  2. calibration.png  -- Can you TRUST the probability? p_survive versus realised
-     survival across ~150 runs. On the diagonal means honest: when it says 0.7,
+  2. calibration.png  -- p_survive versus realised survival across ~150 runs.
+     NOTE: the installed fit is deliberately SHARP (failures weighted up), so
+     expect points BELOW the diagonal in the mid-range -- it under-promises on
+     survivors to make fragile regions actually read as fragile. When it says 0.7,
      about 70% survive.
 
   3. noise_vs_survival.png -- WHAT drives failure? Each run plotted by its
@@ -214,7 +220,7 @@ def fig_calibration(out: Path, rows) -> None:
     ax.set_xlabel("p_survive  (what NARRS predicts)")
     ax.set_ylabel("actual survival rate")
     ax.set_title(f"Is the probability honest?\n"
-                 f"points on the dashed line = calibrated   (ECE = {ece:.3f})", fontsize=11)
+                 f"dashed line = calibrated; sharp fit sits below it mid-range by design   (ECE = {ece:.3f})", fontsize=11)
     ax.legend(loc="upper left", fontsize=9)
     ax.set_aspect("equal")
     fig.tight_layout()
